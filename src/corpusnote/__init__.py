@@ -20,6 +20,13 @@ from .models import (
 )
 from .pages import confirm_rule, propose_rule, read_page, write_page
 from .pack import assemble_pack
+from .qmd_cli import (
+    qmd_search,
+    qmd_subprocess_env,
+    qmd_update,
+    update_index,
+    write_and_verify_index_config,
+)
 from .scrub import scrub_text
 from .search import FakeIndex, SearchIndex, get_search_index, search, set_search_index
 
@@ -51,4 +58,9 @@ __all__ = [
     "FakeIndex",
     "set_search_index",
     "get_search_index",
+    "qmd_subprocess_env",
+    "qmd_search",
+    "qmd_update",
+    "update_index",
+    "write_and_verify_index_config",
 ]
