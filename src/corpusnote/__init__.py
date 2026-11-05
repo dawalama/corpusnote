@@ -18,6 +18,8 @@ from .models import (
     SearchHit,
     Verification,
 )
+from .capture import capture, ingest_text
+from .move import locate_workstream_corpora, move_project_pages, move_workstream_page
 from .pages import confirm_rule, propose_rule, read_page, write_page
 from .pack import assemble_pack
 from .qmd_cli import (
@@ -63,4 +65,9 @@ __all__ = [
     "qmd_update",
     "update_index",
     "write_and_verify_index_config",
+    "capture",
+    "ingest_text",
+    "move_project_pages",
+    "locate_workstream_corpora",
+    "move_workstream_page",
 ]

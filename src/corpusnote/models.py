@@ -44,6 +44,7 @@ class Capture:
     goal: str
     output_summary: str
     verification: Verification
+    project_id: str | None = None
 
 
 @dataclass
