@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "corpusnote"
+version = "0.1.0"
+description = "Markdown vault knowledge corpora with keyword search and strict customer isolation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "Dawa" },
+]
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+corpusnote = "corpusnote.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/corpusnote"]
