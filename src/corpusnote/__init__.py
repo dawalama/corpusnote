@@ -19,7 +19,9 @@ from .models import (
     Verification,
 )
 from .pages import confirm_rule, propose_rule, read_page, write_page
+from .pack import assemble_pack
 from .scrub import scrub_text
+from .search import FakeIndex, SearchIndex, get_search_index, search, set_search_index
 
 __all__ = [
     "CorpusNoteError",
@@ -43,4 +45,10 @@ __all__ = [
     "propose_rule",
     "confirm_rule",
     "scrub_text",
+    "assemble_pack",
+    "search",
+    "SearchIndex",
+    "FakeIndex",
+    "set_search_index",
+    "get_search_index",
 ]
