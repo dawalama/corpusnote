@@ -120,3 +120,21 @@ def test_cli_get_missing_page_exits_2(corpus, tmp_path, capsys):
     root_str = str(corpus.root.parent)
     code = cli_main(["get", "--corpus", corpus.id, "--page", "nonexistent/page.md", "--root", root_str])
     assert code == 2
+
+
+def test_write_page_raises_on_failed_write(corpus, monkeypatch):
+    from corpusnote.pages import write_page
+
+    def mock_fdopen(*args, **kwargs):
+        raise OSError("Disk quota exceeded")
+
+    monkeypatch.setattr("os.fdopen", mock_fdopen)
+
+    with pytest.raises(OSError, match="Disk quota exceeded"):
+        write_page(
+            corpus,
+            "notes/failing.md",
+            frontmatter={"title": "Failing"},
+            body="Should not be saved",
+        )
+

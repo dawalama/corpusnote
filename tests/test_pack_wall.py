@@ -145,3 +145,31 @@ def test_wikilink_hop_resolves_only_within_corpus(corpora_pair):
     assert "Topic One" in pack.text
     assert "topic two linked by wikilink" in pack.text
     assert "Quill private topic data" not in pack.text
+
+
+def test_unresolved_wikilink_does_not_substitute_another_page(corpora_pair):
+    c_sugar, _ = corpora_pair
+
+    # Page linking a missing target ID
+    write_page(
+        c_sugar,
+        "topics/with-missing-link.md",
+        frontmatter={"id": "sugarwork/topics/with-missing-link", "title": "Missing Link Page", "kind": "topic", "status": "active"},
+        body="Here is alpha bravo content with [[sugarwork/topics/non-existent-topic-id]].",
+    )
+
+    # Completely different page in the corpus that should NEVER be substituted
+    write_page(
+        c_sugar,
+        "topics/unrelated-page.md",
+        frontmatter={"id": "sugarwork/topics/unrelated-page", "title": "Unrelated Page", "kind": "topic", "status": "active"},
+        body="Secret unrelated text about quantum computing that has no keyword overlap.",
+    )
+
+    req = PackRequest(goal="alpha bravo", project=None, workstream_id=None, parent_session_id=None)
+    pack = assemble_pack(c_sugar, req)
+
+    assert "Missing Link Page" in pack.text
+    assert "[[sugarwork/topics/non-existent-topic-id]]" in pack.text
+    # Assert other page's body is absent
+    assert "Secret unrelated text" not in pack.text

@@ -34,27 +34,28 @@ def _render_sections(sections: list[PackSection]) -> tuple[str, int, int]:
 
 
 def _find_page_by_id(corpus: Corpus, target_id: str) -> Page | None:
-    """Find a page within corpus.root by matching its frontmatter 'id' exactly."""
-    clean_id = target_id.strip()
-    if clean_id.startswith(f"{corpus.id}/"):
-        clean_id = clean_id[len(corpus.id) + 1:]
+    """Find a page within corpus.root where frontmatter 'id' equals target_id exactly."""
+    clean_target = target_id.strip()
+    if not clean_target:
+        return None
 
-    # Test direct relative path if candidate has no extension
-    candidates = [f"{clean_id}.md", clean_id]
-    for cand in candidates:
-        try:
-            p = read_page(corpus, cand)
-            if p.frontmatter.get("id") == target_id or p.frontmatter.get("id") == f"{corpus.id}/{cand[:-3] if cand.endswith('.md') else cand}":
-                return p
-        except Exception:
-            pass
+    # Fast path: check direct candidate relative path if target_id starts with corpus.id/
+    if clean_target.startswith(f"{corpus.id}/"):
+        candidate_rel = clean_target[len(corpus.id) + 1:]
+        for cand in (f"{candidate_rel}.md", candidate_rel):
+            try:
+                p = read_page(corpus, cand)
+                if p.frontmatter.get("id") == clean_target:
+                    return p
+            except Exception:
+                pass
 
-    # Fallback: scan markdown files in corpus root
+    # Scan markdown files in corpus root, matching only on frontmatter id == clean_target
     for file_path in corpus.root.rglob("*.md"):
         try:
             rel = file_path.relative_to(corpus.root).as_posix()
             p = read_page(corpus, rel)
-            if p.frontmatter.get("id") == target_id or p.frontmatter.get("id") == f"{corpus.id}/{rel[:-3]}":
+            if p.frontmatter.get("id") == clean_target:
                 return p
         except Exception:
             continue

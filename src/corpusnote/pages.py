@@ -141,7 +141,11 @@ def write_page(
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(rendered)
     except Exception:
-        pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
 
     return Page(relpath=relpath, frontmatter=fm, body=scrubbed_body)
 
