@@ -60,10 +60,35 @@ class PackRequest:
 
 @dataclass
 class PackSection:
-    name: str               # citations | rules | handoff | workstream | hits | hop
+    name: str               # citations | rules | compiled | handoff | workstream | hits | hop
     text: str
     tokens: int
     pages: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CompiledClaim:
+    id: str
+    topic: str
+    pillar: str             # fact | operator_view | stakeholder_view | agent_hypothesis
+    entity: str             # system | dawa | stakeholder:<id> | agent:<provider>
+    stance: str             # verified | mandate | preference | intention | idea | priority | requirement | constraint | concern | hypothesis | risk | observation
+    statement: str
+    scope: str = "project"  # project | client | general
+    project: str = ""
+    project_id: str = ""
+    provenance: list[str] = field(default_factory=list)
+    previous: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class CompileResult:
+    action: str             # added | superseded | reinforced | graduated | coexisting
+    claim: CompiledClaim
+    state_relpath: str
+    resolved_ids: list[str] = field(default_factory=list)
+    promoted_general: CompiledClaim | None = None
 
 
 @dataclass

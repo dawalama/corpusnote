@@ -9,6 +9,8 @@ from .errors import (
 from .layout import open_corpus, resolve_page_path, slugify_project
 from .models import (
     Capture,
+    CompileResult,
+    CompiledClaim,
     Corpus,
     CorpusId,
     Pack,
@@ -22,6 +24,15 @@ from .capture import capture, ingest_text
 from .move import locate_workstream_corpora, move_project_pages, move_workstream_page
 from .pages import confirm_rule, propose_rule, read_page, write_page
 from .pack import assemble_pack
+from .state import (
+    compile_capture,
+    compile_claim,
+    deidentify_general_statement,
+    get_compiled_view,
+    infer_topic,
+    read_compiled_claims,
+    render_compiled_markdown,
+)
 from .qmd_cli import (
     qmd_search,
     qmd_subprocess_env,
@@ -43,6 +54,8 @@ __all__ = [
     "SearchHit",
     "Verification",
     "Capture",
+    "CompiledClaim",
+    "CompileResult",
     "PackRequest",
     "PackSection",
     "Pack",
@@ -55,6 +68,13 @@ __all__ = [
     "confirm_rule",
     "scrub_text",
     "assemble_pack",
+    "compile_claim",
+    "compile_capture",
+    "read_compiled_claims",
+    "render_compiled_markdown",
+    "get_compiled_view",
+    "infer_topic",
+    "deidentify_general_statement",
     "search",
     "SearchIndex",
     "FakeIndex",
