@@ -70,9 +70,9 @@ class PackSection:
 class CompiledClaim:
     id: str
     topic: str
-    pillar: str             # fact | operator_view | stakeholder_view | agent_hypothesis
+    pillar: str             # pattern | fact | operator_view | stakeholder_view | agent_hypothesis
     entity: str             # system | dawa | stakeholder:<id> | agent:<provider>
-    stance: str             # verified | mandate | preference | intention | idea | priority | requirement | constraint | concern | hypothesis | risk | observation
+    stance: str             # proven | canonical | verified | mandate | preference | intention | idea | priority | requirement | constraint | concern | hypothesis | risk | dead_end | candidate_pattern | observation
     statement: str
     scope: str = "project"  # project | client | general
     project: str = ""
@@ -80,6 +80,23 @@ class CompiledClaim:
     provenance: list[str] = field(default_factory=list)
     previous: str = ""
     updated_at: str = ""
+    evidence_count: int = 1
+
+
+@dataclass
+class TopicClash:
+    topic: str
+    claims: list[CompiledClaim] = field(default_factory=list)
+    summary: str = ""
+
+
+@dataclass
+class KnowledgeDigest:
+    patterns: list[CompiledClaim] = field(default_factory=list)
+    clashes: list[TopicClash] = field(default_factory=list)
+    dead_ends: list[CompiledClaim] = field(default_factory=list)
+    open_hypotheses: list[CompiledClaim] = field(default_factory=list)
+    markdown: str = ""
 
 
 @dataclass

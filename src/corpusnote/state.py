@@ -9,13 +9,14 @@ from typing import Iterable
 
 from .errors import MissingPage, RejectedWrite
 from .layout import slugify_project
-from .models import Capture, CompileResult, CompiledClaim, Corpus, Page
+from .models import Capture, CompileResult, CompiledClaim, Corpus, KnowledgeDigest, Page, TopicClash
 from .pages import _now_iso, contains_instruction_injection, read_page, write_page
 from .scrub import scrub_text
 
-VALID_PILLARS = ("fact", "operator_view", "stakeholder_view", "agent_hypothesis")
+VALID_PILLARS = ("pattern", "fact", "operator_view", "stakeholder_view", "agent_hypothesis")
 
 DEFAULT_STANCE_BY_PILLAR = {
+    "pattern": "proven",
     "fact": "verified",
     "operator_view": "preference",
     "stakeholder_view": "priority",
@@ -23,6 +24,7 @@ DEFAULT_STANCE_BY_PILLAR = {
 }
 
 DEFAULT_ENTITY_BY_PILLAR = {
+    "pattern": "system",
     "fact": "system",
     "operator_view": "dawa",
     "stakeholder_view": "stakeholder",
@@ -32,6 +34,7 @@ DEFAULT_ENTITY_BY_PILLAR = {
 VALID_SCOPES = ("project", "client", "general")
 
 MAX_CLAIMS_PER_PAGE = 25
+MAX_DEAD_ENDS_PER_PAGE = 5
 
 _STOPWORDS = frozenset({
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
@@ -100,7 +103,7 @@ def _claim_id(pillar: str, entity: str, topic: str) -> str:
 def _state_relpath_for(project: str | None, scope: str = "project", *, is_commons: bool = False) -> str:
     if is_commons:
         return "state/commons.md"
-    if project and scope == "project":
+    if project and scope in ("project", "general"):
         return f"projects/{slugify_project(project)}/state.md"
     return "state/collection.md"
 
@@ -115,6 +118,10 @@ def _claim_from_dict(data: dict) -> CompiledClaim:
     cid = str(data.get("id") or _claim_id(pillar, entity, topic))
     prov = data.get("provenance")
     prov_list = [str(p) for p in prov if p] if isinstance(prov, list) else []
+    try:
+        ev_count = max(1, int(data.get("evidence_count") or 1))
+    except (TypeError, ValueError):
+        ev_count = 1
     return CompiledClaim(
         id=cid,
         topic=topic,
@@ -128,6 +135,7 @@ def _claim_from_dict(data: dict) -> CompiledClaim:
         provenance=prov_list,
         previous=str(data.get("previous") or "").strip(),
         updated_at=str(data.get("updated_at") or ""),
+        evidence_count=ev_count,
     )
 
 
@@ -150,11 +158,19 @@ def read_compiled_claims(corpus: Corpus, relpath: str) -> list[CompiledClaim]:
 
 
 def render_compiled_markdown(claims: Iterable[CompiledClaim], *, title: str = "Compiled State") -> str:
-    """Render structured claims into a compact, human-readable Markdown view."""
+    """Render structured claims into a compact, human-readable Markdown view.
+
+    Proven Patterns ("The Line Ahead") are rendered first, sorted by evidence_count
+    descending so agents focus on canonical positive patterns rather than negative hazards.
+    """
     claim_list = list(claims)
     if not claim_list:
         return f"# {title}\n\n_No compiled knowledge recorded yet._\n"
 
+    patterns = sorted(
+        [c for c in claim_list if c.pillar == "pattern"],
+        key=lambda c: (-c.evidence_count, c.topic),
+    )
     facts = [c for c in claim_list if c.pillar == "fact"]
     operator_views = [c for c in claim_list if c.pillar == "operator_view"]
     stakeholder_views = [c for c in claim_list if c.pillar == "stakeholder_view"]
@@ -163,12 +179,18 @@ def render_compiled_markdown(claims: Iterable[CompiledClaim], *, title: str = "C
     lines: list[str] = [f"# {title}"]
 
     def _format_bullet(c: CompiledClaim, include_entity: bool = True) -> str:
-        tag = f"[{c.entity} | {c.stance}]" if include_entity else f"[{c.stance}]"
+        ev_suffix = f" · {c.evidence_count}x" if c.evidence_count > 1 else ""
+        tag = f"[{c.entity} | {c.stance}{ev_suffix}]" if include_entity else f"[{c.stance}{ev_suffix}]"
         prov = f" (refs: {', '.join(c.provenance[:3])})" if c.provenance else ""
         line = f"- **{c.topic}** {tag}: {c.statement}{prov}"
         if c.previous:
             line += f"\n  - _Previously: {c.previous}_"
         return line
+
+    if patterns:
+        lines.append("\n### Proven Patterns (The Line Ahead)")
+        for c in patterns:
+            lines.append(_format_bullet(c, include_entity=False))
 
     if facts:
         lines.append("\n### Accepted Facts")
@@ -186,26 +208,39 @@ def render_compiled_markdown(claims: Iterable[CompiledClaim], *, title: str = "C
             lines.append(_format_bullet(c, include_entity=True))
 
     if hypotheses:
-        lines.append("\n### Open Agent Hypotheses & Risks")
+        lines.append("\n### Open Agent Hypotheses & Local Hazards")
         for c in hypotheses:
             lines.append(_format_bullet(c, include_entity=True))
 
     return "\n".join(lines) + "\n"
 
 
-def _compact_claims(claims: list[CompiledClaim], max_claims: int = MAX_CLAIMS_PER_PAGE) -> list[CompiledClaim]:
-    """Keep claims bounded under max_claims, pruning oldest agent hypotheses first."""
+def _compact_claims(
+    claims: list[CompiledClaim],
+    max_claims: int = MAX_CLAIMS_PER_PAGE,
+    max_dead_ends: int = MAX_DEAD_ENDS_PER_PAGE,
+) -> list[CompiledClaim]:
+    """Keep claims bounded under max_claims, capping dead-ends and pruning oldest hypotheses first."""
+    # 1. Cap dead_ends first so negative obstructions never accumulate unboundedly
+    dead_ends = [c for c in claims if c.pillar == "agent_hypothesis" and c.stance == "dead_end"]
+    if len(dead_ends) > max_dead_ends:
+        drop_ids = {c.id for c in dead_ends[:-max_dead_ends]}
+        claims = [c for c in claims if c.id not in drop_ids]
+
     if len(claims) <= max_claims:
         return claims
 
-    # Separate hypotheses from authoritative claims
-    hyps = [c for c in claims if c.pillar == "agent_hypothesis"]
+    # 2. Separate remaining dead_ends, other hypotheses, and authoritative claims
+    rem_dead = [c for c in claims if c.pillar == "agent_hypothesis" and c.stance == "dead_end"]
+    other_hyps = [c for c in claims if c.pillar == "agent_hypothesis" and c.stance != "dead_end"]
     auth = [c for c in claims if c.pillar != "agent_hypothesis"]
 
-    while len(auth) + len(hyps) > max_claims and hyps:
-        hyps.pop(0)
+    while len(auth) + len(other_hyps) + len(rem_dead) > max_claims and rem_dead:
+        rem_dead.pop(0)
+    while len(auth) + len(other_hyps) > max_claims and other_hyps:
+        other_hyps.pop(0)
 
-    combined = auth + hyps
+    combined = auth + other_hyps + rem_dead
     if len(combined) > max_claims:
         combined = combined[-max_claims:]
     return combined
@@ -302,10 +337,13 @@ def compile_claim(
     resolved_entity = (entity or DEFAULT_ENTITY_BY_PILLAR[pillar]).strip()
     resolved_stance = (stance or DEFAULT_STANCE_BY_PILLAR[pillar]).strip()
 
-    # Authority enforcement: an agent cannot directly assert an unverified fact
+    # Authority enforcement: an agent cannot directly assert an unverified fact or pattern
     if pillar == "fact" and resolved_entity.startswith("agent:") and resolved_stance not in ("verified", "accepted"):
         pillar = "agent_hypothesis"
         resolved_stance = "hypothesis"
+    elif pillar == "pattern" and resolved_entity.startswith("agent:") and resolved_stance not in ("proven", "canonical", "verified"):
+        pillar = "agent_hypothesis"
+        resolved_stance = "candidate_pattern"
 
     scrubbed_stmt, _ = scrub_text(raw_stmt, extra_secrets=extra_secrets)
     resolved_topic = slugify_project(topic) if topic and topic.strip() else infer_topic(scrubbed_stmt)
@@ -320,9 +358,9 @@ def compile_claim(
     updated_claim: CompiledClaim | None = None
     new_claims: list[CompiledClaim] = []
 
-    if pillar == "fact":
-        # 1. Check if an existing fact on the same topic exists -> supersede or reinforce
-        # 2. Graduate any open agent_hypothesis or operator_view(intention) on the same topic
+    if pillar in ("pattern", "fact"):
+        # 1. Check if an existing pattern/fact on the same topic exists -> supersede or reinforce (incrementing evidence_count)
+        # 2. Graduate/clear any open agent_hypothesis (including dead_end, candidate_pattern, hypothesis) or operator_view(intention) on the same topic
         graduated_prev = ""
         graduated_prov: list[str] = []
 
@@ -338,7 +376,12 @@ def compile_claim(
                     if p not in graduated_prov:
                         graduated_prov.append(p)
                 if not graduated_prev:
-                    graduated_prev = f"Confirmed hypothesis ({c.entity}): {c.statement[:160]}"
+                    if c.stance == "dead_end":
+                        graduated_prev = f"Cleared dead-end ({c.entity}): {c.statement[:160]}"
+                    elif c.stance == "candidate_pattern":
+                        graduated_prev = f"Graduated candidate pattern ({c.entity}): {c.statement[:160]}"
+                    else:
+                        graduated_prev = f"Confirmed hypothesis ({c.entity}): {c.statement[:160]}"
                 continue
 
             if c.pillar == "operator_view" and c.stance == "intention":
@@ -350,14 +393,14 @@ def compile_claim(
                     graduated_prev = f"Fulfilled intention ({c.entity}): {c.statement[:160]}"
                 continue
 
-            if c.pillar == "fact" and updated_claim is None:
+            if c.pillar == pillar and updated_claim is None:
                 merged_prov = list(dict.fromkeys(c.provenance + graduated_prov + prov_list))
                 if c.statement.strip().lower() == scrubbed_stmt.strip().lower():
                     action = "reinforced"
                     updated_claim = CompiledClaim(
                         id=c.id,
                         topic=c.topic,
-                        pillar="fact",
+                        pillar=pillar,
                         entity=resolved_entity,
                         stance=resolved_stance,
                         statement=c.statement,
@@ -365,15 +408,16 @@ def compile_claim(
                         project=project or c.project,
                         project_id=project_id or c.project_id,
                         provenance=merged_prov,
-                        previous=c.previous,
+                        previous=c.previous or graduated_prev,
                         updated_at=now,
+                        evidence_count=c.evidence_count + 1,
                     )
                 else:
                     action = "superseded"
                     updated_claim = CompiledClaim(
                         id=c.id,
                         topic=resolved_topic,
-                        pillar="fact",
+                        pillar=pillar,
                         entity=resolved_entity,
                         stance=resolved_stance,
                         statement=scrubbed_stmt,
@@ -383,6 +427,7 @@ def compile_claim(
                         provenance=merged_prov,
                         previous=c.statement[:200],
                         updated_at=now,
+                        evidence_count=c.evidence_count + 1 if pillar == "pattern" else 1,
                     )
                 new_claims.append(updated_claim)
             else:
@@ -393,9 +438,9 @@ def compile_claim(
                 action = "graduated"
             merged_prov = list(dict.fromkeys(graduated_prov + prov_list))
             updated_claim = CompiledClaim(
-                id=_claim_id("fact", resolved_entity, resolved_topic),
+                id=_claim_id(pillar, resolved_entity, resolved_topic),
                 topic=resolved_topic,
-                pillar="fact",
+                pillar=pillar,
                 entity=resolved_entity,
                 stance=resolved_stance,
                 statement=scrubbed_stmt,
@@ -405,6 +450,7 @@ def compile_claim(
                 provenance=merged_prov,
                 previous=graduated_prev,
                 updated_at=now,
+                evidence_count=1,
             )
             new_claims.append(updated_claim)
 
@@ -436,6 +482,7 @@ def compile_claim(
                         provenance=merged_prov,
                         previous=c.previous,
                         updated_at=now,
+                        evidence_count=c.evidence_count + 1,
                     )
                 else:
                     action = "superseded"
@@ -452,6 +499,7 @@ def compile_claim(
                         provenance=merged_prov,
                         previous=f"[{c.stance}] {c.statement[:180]}",
                         updated_at=now,
+                        evidence_count=1,
                     )
                 new_claims.append(updated_claim)
             else:
@@ -474,11 +522,12 @@ def compile_claim(
                 provenance=prov_list,
                 previous="",
                 updated_at=now,
+                evidence_count=1,
             )
             new_claims.append(updated_claim)
 
     else:  # agent_hypothesis
-        # Cannot overwrite facts, operator_view, or stakeholder_view.
+        # Cannot overwrite patterns, facts, operator_view, or stakeholder_view.
         for c in existing_claims:
             matched = _topics_match(c.topic, resolved_topic, c.statement, scrubbed_stmt)
             if not matched:
@@ -502,6 +551,7 @@ def compile_claim(
                         provenance=merged_prov,
                         previous=c.previous,
                         updated_at=now,
+                        evidence_count=c.evidence_count + 1,
                     )
                 else:
                     action = "superseded"
@@ -518,6 +568,7 @@ def compile_claim(
                         provenance=merged_prov,
                         previous=c.statement[:180],
                         updated_at=now,
+                        evidence_count=1,
                     )
                 new_claims.append(updated_claim)
             else:
@@ -537,6 +588,7 @@ def compile_claim(
                 provenance=prov_list,
                 previous="",
                 updated_at=now,
+                evidence_count=1,
             )
             new_claims.append(updated_claim)
 
@@ -559,7 +611,7 @@ def compile_claim(
     if (
         not is_commons
         and scope == "general"
-        and pillar in ("fact", "operator_view")
+        and pillar in ("pattern", "fact", "operator_view")
         and commons_corpus is not None
     ):
         general_stmt = deidentify_general_statement(
@@ -611,19 +663,28 @@ def _summarize_capture_outcome(goal: str, summary: str) -> str:
     return distilled[:260].strip()
 
 
+_PATTERN_LINE_RE = re.compile(r"^\s*(?:proven\s+)?pattern\s*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+
+
 def compile_capture(
     corpus: Corpus,
     item: Capture,
     *,
     agent_provider: str | None = None,
     residual_risks: list[str] | None = None,
+    proven_pattern: str | None = None,
+    commons_corpus: Corpus | None = None,
+    redact_terms: tuple[str, ...] = (),
     extra_secrets: tuple[str, ...] = (),
 ) -> list[CompileResult]:
     """Compile a completed session Capture into the project/collection compiled state.
 
     - Verified sessions (verification.passed is True) compile into Accepted Facts (and graduate
-      matching hypotheses or intentions).
-    - Unverified sessions compile into Agent Hypotheses attributed to agent:<provider>.
+      matching hypotheses, dead_ends, or intentions). If a proven_pattern is supplied (or a
+      'Pattern: ...' line is present in output_summary), it also compiles/reinforces a Proven Pattern.
+    - Failed verification sessions (verification.passed is False) compile into a temporary
+      local hazard (stance='dead_end') so retries do not repeat the failed approach.
+    - Unverified sessions (verification.passed is None) compile into Agent Hypotheses.
     - Residual risks compile as Agent Hypotheses with stance='risk'.
     """
     results: list[CompileResult] = []
@@ -640,6 +701,7 @@ def compile_capture(
 
     topic = infer_topic(scrubbed_goal or scrubbed_summary, fallback=item.project or "session")
     provider_tag = f"agent:{(agent_provider or 'session').strip()}"
+    target_scope = "project" if item.project else "client"
 
     if item.verification.passed is True:
         res = compile_claim(
@@ -649,7 +711,50 @@ def compile_capture(
             entity="system",
             stance="verified",
             topic=topic,
-            scope="project" if item.project else "client",
+            scope=target_scope,
+            project=item.project or None,
+            project_id=item.project_id or None,
+            provenance=[item.session_id],
+            extra_secrets=extra_secrets,
+        )
+        results.append(res)
+
+        # Extract or compile any explicit proven pattern ("The Line Ahead")
+        extracted_pattern = proven_pattern
+        if not extracted_pattern and scrubbed_summary:
+            m = _PATTERN_LINE_RE.search(scrubbed_summary)
+            if m:
+                extracted_pattern = m.group(1).strip()
+        if extracted_pattern:
+            clean_pat, _ = scrub_text(str(extracted_pattern).strip(), extra_secrets=extra_secrets)
+            if clean_pat and not contains_instruction_injection(clean_pat):
+                pat_topic = infer_topic(clean_pat, fallback=topic)
+                pat_res = compile_claim(
+                    corpus,
+                    statement=clean_pat[:240],
+                    pillar="pattern",
+                    entity="system",
+                    stance="proven",
+                    topic=pat_topic,
+                    scope=target_scope,
+                    project=item.project or None,
+                    project_id=item.project_id or None,
+                    provenance=[item.session_id],
+                    commons_corpus=commons_corpus,
+                    redact_terms=redact_terms,
+                    extra_secrets=extra_secrets,
+                )
+                results.append(pat_res)
+    elif item.verification.passed is False:
+        dead_stmt = f"Failed verification (exit_code={item.verification.exit_code}): {statement}"
+        res = compile_claim(
+            corpus,
+            statement=dead_stmt[:260],
+            pillar="agent_hypothesis",
+            entity=provider_tag,
+            stance="dead_end",
+            topic=topic,
+            scope=target_scope,
             project=item.project or None,
             project_id=item.project_id or None,
             provenance=[item.session_id],
@@ -664,7 +769,7 @@ def compile_capture(
             entity=provider_tag,
             stance="hypothesis",
             topic=topic,
-            scope="project" if item.project else "client",
+            scope=target_scope,
             project=item.project or None,
             project_id=item.project_id or None,
             provenance=[item.session_id],
@@ -684,7 +789,7 @@ def compile_capture(
             entity=provider_tag,
             stance="risk",
             topic=risk_topic,
-            scope="project" if item.project else "client",
+            scope=target_scope,
             project=item.project or None,
             project_id=item.project_id or None,
             provenance=[item.session_id],
@@ -693,6 +798,81 @@ def compile_capture(
         results.append(risk_res)
 
     return results
+
+
+def digest_compiled_state(
+    corpus: Corpus,
+    *,
+    project: str | None = None,
+    commons_corpus: Corpus | None = None,
+) -> KnowledgeDigest:
+    """Build a structured digest highlighting Proven Patterns, Clashes, Dead Ends, and Open Hypotheses."""
+    claims, _, _ = get_compiled_view(corpus, project=project, commons_corpus=commons_corpus)
+
+    patterns = sorted(
+        [c for c in claims if c.pillar == "pattern"],
+        key=lambda c: (-c.evidence_count, c.topic),
+    )
+    dead_ends = [c for c in claims if c.pillar == "agent_hypothesis" and c.stance == "dead_end"]
+    open_hypotheses = [c for c in claims if c.pillar == "agent_hypothesis" and c.stance != "dead_end"]
+
+    # Detect perspective clashes: topics where multiple entities hold views or where a view is opposed/concern
+    view_claims = [c for c in claims if c.pillar in ("operator_view", "stakeholder_view")]
+    groups: list[list[CompiledClaim]] = []
+    for vc in view_claims:
+        placed = False
+        for grp in groups:
+            if _topics_match(grp[0].topic, vc.topic, grp[0].statement, vc.statement):
+                grp.append(vc)
+                placed = True
+                break
+        if not placed:
+            groups.append([vc])
+
+    clashes: list[TopicClash] = []
+    for grp in groups:
+        entities = {c.entity.lower() for c in grp}
+        has_opposition = any(c.stance in ("opposed", "concern", "constraint") for c in grp)
+        if len(entities) > 1 or (len(grp) > 1 and has_opposition):
+            topic_name = grp[0].topic
+            parts = [f"{c.entity} ({c.stance}): {c.statement}" for c in grp]
+            clashes.append(
+                TopicClash(
+                    topic=topic_name,
+                    claims=grp,
+                    summary=" vs. ".join(parts),
+                )
+            )
+
+    md_lines: list[str] = [f"# Knowledge Digest: {project or corpus.id}"]
+    if patterns:
+        md_lines.append("\n### Proven Patterns (The Line Ahead)")
+        for p in patterns:
+            ev = f" · {p.evidence_count}x" if p.evidence_count > 1 else ""
+            md_lines.append(f"- **{p.topic}** [{p.stance}{ev}]: {p.statement}")
+    if clashes:
+        md_lines.append("\n### Perspective Clashes & Trade-offs")
+        for cl in clashes:
+            md_lines.append(f"- **{cl.topic}**: {cl.summary}")
+    if dead_ends:
+        md_lines.append("\n### Active Local Dead Ends (Needs Positive Pattern)")
+        for d in dead_ends:
+            md_lines.append(f"- **{d.topic}** [{d.entity}]: {d.statement}")
+    if open_hypotheses:
+        md_lines.append("\n### Open Hypotheses & Risks")
+        for h in open_hypotheses:
+            md_lines.append(f"- **{h.topic}** [{h.entity} | {h.stance}]: {h.statement}")
+
+    if len(md_lines) == 1:
+        md_lines.append("\n_No patterns, clashes, or open hazards recorded._")
+
+    return KnowledgeDigest(
+        patterns=patterns,
+        clashes=clashes,
+        dead_ends=dead_ends,
+        open_hypotheses=open_hypotheses,
+        markdown="\n".join(md_lines) + "\n",
+    )
 
 
 def get_compiled_view(

@@ -9,6 +9,7 @@ from corpusnote import (
     assemble_pack,
     compile_capture,
     compile_claim,
+    digest_compiled_state,
     get_compiled_view,
     open_corpus,
     read_compiled_claims,
@@ -233,3 +234,118 @@ def test_compile_claim_rejects_prompt_injection(corpora):
             pillar="fact",
             topic="security",
         )
+
+
+def test_proven_pattern_reinforces_and_clears_local_dead_end(corpora):
+    client, personal = corpora
+
+    # 1. Agent fails verification -> records a temporary local dead_end hazard
+    failed = Capture(
+        session_id="sess-fail-1",
+        project="rdc-web",
+        project_id="p-web",
+        workstream_id="ch-1",
+        goal="Fix agent binary lookup in tests",
+        output_summary="Tried caching shutil.which at module import time.",
+        verification=Verification(exit_code=1, passed=False),
+    )
+    res_fail = compile_capture(client, failed, agent_provider="codex")
+    assert len(res_fail) == 1
+    assert res_fail[0].claim.pillar == "agent_hypothesis"
+    assert res_fail[0].claim.stance == "dead_end"
+
+    # 2. Now compile a Proven Pattern ("The Line Ahead") on the same topic
+    pat1 = compile_claim(
+        client,
+        statement="Resolve shutil.which inside _path_known_agents() at call time so test mocks work cleanly.",
+        pillar="pattern",
+        entity="dawa",
+        stance="proven",
+        topic="agent-binary-lookup",
+        scope="general",
+        project="rdc-web",
+        provenance=["sess-pass-2"],
+        commons_corpus=personal,
+    )
+    assert pat1.action == "graduated"
+    assert pat1.claim.pillar == "pattern"
+    assert pat1.claim.evidence_count == 1
+    assert "Cleared dead-end" in pat1.claim.previous
+    assert pat1.promoted_general is not None
+
+    # 3. Reinforce the same pattern on a subsequent run -> evidence_count increments
+    pat2 = compile_claim(
+        client,
+        statement="Resolve shutil.which inside _path_known_agents() at call time so test mocks work cleanly.",
+        pillar="pattern",
+        entity="dawa",
+        stance="proven",
+        topic="agent-binary-lookup",
+        scope="project",
+        project="rdc-web",
+        provenance=["sess-pass-3"],
+    )
+    assert pat2.action == "reinforced"
+    assert pat2.claim.evidence_count == 2
+
+    # 4. Verify Proven Patterns render first at the top of the compiled view with 2x badge
+    claims, _, rendered = get_compiled_view(client, project="rdc-web")
+    assert len(claims) == 1
+    assert claims[0].pillar == "pattern"
+    assert "### Proven Patterns (The Line Ahead)" in rendered
+    assert "[proven · 2x]" in rendered
+
+
+def test_digest_surfaces_patterns_clashes_and_dead_ends(corpora):
+    client, _ = corpora
+
+    # Add a proven pattern
+    compile_claim(
+        client,
+        statement="Use DatabaseManager.transaction('rdc') for SQLite queries.",
+        pillar="pattern",
+        topic="sqlite-db-access",
+        project="rdc-server",
+    )
+
+    # Add clashing operator and stakeholder views on the same topic
+    compile_claim(
+        client,
+        statement="Keep kiosk single-pane terminal by default.",
+        pillar="operator_view",
+        entity="dawa",
+        stance="mandate",
+        topic="kiosk-layout",
+        project="rdc-server",
+    )
+    compile_claim(
+        client,
+        statement="Show split multi-pane metrics by default.",
+        pillar="stakeholder_view",
+        entity="stakeholder:ops",
+        stance="priority",
+        topic="kiosk-layout",
+        project="rdc-server",
+    )
+
+    # Add an unresolved dead_end
+    compile_claim(
+        client,
+        statement="Direct git+ URL in optional-dependencies fails hatchling build.",
+        pillar="agent_hypothesis",
+        entity="agent:codex",
+        stance="dead_end",
+        topic="pyproject-git-deps",
+        project="rdc-server",
+    )
+
+    digest = digest_compiled_state(client, project="rdc-server")
+    assert len(digest.patterns) == 1
+    assert len(digest.clashes) == 1
+    assert digest.clashes[0].topic == "kiosk-layout"
+    assert "dawa" in digest.clashes[0].summary
+    assert "stakeholder:ops" in digest.clashes[0].summary
+    assert len(digest.dead_ends) == 1
+    assert "### Proven Patterns (The Line Ahead)" in digest.markdown
+    assert "### Perspective Clashes & Trade-offs" in digest.markdown
+    assert "### Active Local Dead Ends" in digest.markdown
